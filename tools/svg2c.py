@@ -221,12 +221,35 @@ def emit_c(commands: List[Command], outname: str) -> str:
     return '\n'.join(lines)
 
 
+def estimate_points(commands: List[Command], steps: int = 40) -> int:
+    # Estimate how many points will be produced on the device given sampling steps
+    total = 0
+    for c in commands:
+        if c.name == Cmd.BEZ_CUBIC or c.name == Cmd.BEZ_QUAD:
+            total += steps
+        elif c.name == Cmd.LINE or c.name == Cmd.LINE_TO or c.name == Cmd.MOVE:
+            total += max(1, steps // 4)
+        elif c.name == Cmd.CIRCLE or c.name == Cmd.ELLIPSE:
+            total += steps
+        elif c.name == Cmd.RECT:
+            total += steps
+        elif c.name == Cmd.BLANK:
+            if c.params:
+                total += int(c.params[0])
+        else:
+            total += 1
+    return total
+
+
 def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser(description='Convert SVG to C command array for ESP32')
     parser.add_argument('input', help='input SVG file')
     parser.add_argument('-o', '--output', help='output C file', default=None)
     parser.add_argument('--center', action='store_true', help='center image into 255x255')
+    parser.add_argument('--max-points', type=int, default=8192, help='max device points (default: 8192)')
+    parser.add_argument('--steps', type=int, default=40, help='sampling steps per curve (default: 40)')
+    parser.add_argument('--auto-downsample', action='store_true', help='auto reduce steps to fit max points')
     args = parser.parse_args(argv)
     input_file = args.input
     out_file = args.output or (input_file.rsplit('.', 1)[0] + '.c')
@@ -329,10 +352,29 @@ def main(argv=None):
     # append END
     commands.append(Command(Cmd.END, []))
 
+    # Preflight estimate
+    est = estimate_points(commands, steps=args.steps)
+    if est > args.max_points:
+        if args.auto_downsample:
+            # reduce steps proportionally
+            ratio = args.max_points / est
+            new_steps = max(4, int(args.steps * ratio))
+            print(f"Estimated points {est} exceeds max {args.max_points}, auto-downsample to steps={new_steps}")
+            est2 = estimate_points(commands, steps=new_steps)
+            if est2 > args.max_points:
+                print(f"Even after downsample estimated points {est2} > max {args.max_points}. Aborting.")
+                return 3
+            else:
+                args.steps = new_steps
+                print(f"Downsampled: new estimate {est2}")
+        else:
+            print(f"Error: estimated {est} points, max {args.max_points}. Use --auto-downsample or simplify SVG.")
+            return 2
+
     ctext = emit_c(commands, input_file)
     with open(out_file, 'w', encoding='utf-8') as f:
         f.write(ctext)
-    print(f'Wrote {out_file} with {len(commands)} commands')
+    print(f'Wrote {out_file} with {len(commands)} commands (estimated points: {est})')
     return 0
 
 

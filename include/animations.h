@@ -12,6 +12,8 @@
 #define MODE_DONUT       6
 #define MODE_LISSAJOUS   7
 #define MODE_CAT         8
+#define MODE_ELLIPSE     9
+#define MODE_BEZIER_DEMO 10
 
 #define MAX_POINTS    8192
 #define PI            3.14159265f
@@ -31,3 +33,5 @@ void generate_tunnel_frame(float t);
 void generate_donut_frame(float t);
 void generate_lissajous_frame(float t);
 void generate_cat_frame(float t);
+void generate_ellipse_frame(float t);
+void generate_bezier_demo_frame(float t);

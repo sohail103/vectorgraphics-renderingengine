@@ -29,6 +29,8 @@ void app_main(void) {
             case MODE_DONUT:      generate_donut_frame(t); break;
             case MODE_LISSAJOUS:  generate_lissajous_frame(t); break;
             case MODE_CAT:        generate_cat_frame(t); break;
+            case MODE_ELLIPSE:    generate_ellipse_frame(t); break;
+            case MODE_BEZIER_DEMO: generate_bezier_demo_frame(t); break;
             case MODE_SVG_GENERATED: render_svg(); break;
         }
         i2s_write(I2S_NUM_0, wave, wave_len * 4, &bytes_written, portMAX_DELAY);
