@@ -21,6 +21,8 @@ import re
 import math
 import sys
 from typing import List, Tuple
+import subprocess
+import json
 from dataclasses import dataclass
 
 # Target device coordinate space
@@ -220,94 +222,109 @@ def emit_c(commands: List[Command], outname: str) -> str:
 
 
 def main(argv=None):
-    if argv is None:
-        argv = sys.argv[1:]
-    if not argv:
-        print('Usage: tools/svg2c.py input.svg -o output.c')
-        return 2
-    input_file = argv[0]
-    out_file = None
-    if '-o' in argv:
-        oidx = argv.index('-o')
-        if oidx + 1 < len(argv):
-            out_file = argv[oidx + 1]
-
-    if not out_file:
-        out_file = input_file.rsplit('.', 1)[0] + '.c'
-
+    import argparse
+    parser = argparse.ArgumentParser(description='Convert SVG to C command array for ESP32')
+    parser.add_argument('input', help='input SVG file')
+    parser.add_argument('-o', '--output', help='output C file', default=None)
+    parser.add_argument('--center', action='store_true', help='center image into 255x255')
+    args = parser.parse_args(argv)
+    input_file = args.input
+    out_file = args.output or (input_file.rsplit('.', 1)[0] + '.c')
     with open(input_file, 'r', encoding='utf-8') as f:
         svg = f.read()
 
     vb = parse_viewbox(svg)
 
-    # find elements and parse
+    # Try using nanosvg CLI if available for more robust path extraction
     commands = []
-    # naive element finder: path, circle, ellipse, rect, line, polyline, polygon
-    for m in re.finditer(r'<(path|circle|ellipse|rect|line|polyline|polygon)([^>]*)>', svg, flags=re.IGNORECASE):
-        tag = m.group(1).lower()
-        attrs = m.group(2)
-        if tag == 'path':
-            d = re.search(r'd\s*=\s*"([^"]+)"', attrs)
-            if d:
-                cmds = parse_path(d.group(1), vb)
-                commands.extend(cmds)
-        elif tag == 'circle':
-            nums = float_list_from_str(attrs)
-            if len(nums) >= 3:
-                cx, cy, r = nums[0], nums[1], nums[2]
-                sx, sy = scale_point(cx, cy, vb)
-                rr = r * min(W / vb[2], H / vb[3])
-                commands.append(Command(Cmd.CIRCLE, [sx, sy, rr]))
-        elif tag == 'ellipse':
-            nums = float_list_from_str(attrs)
-            if len(nums) >= 4:
-                cx, cy, rx, ry = nums[0], nums[1], nums[2], nums[3]
-                sx, sy = scale_point(cx, cy, vb)
-                rxs = rx * (W / vb[2])
-                rys = ry * (H / vb[3])
-                commands.append(Command(Cmd.ELLIPSE, [sx, sy, rxs, rys]))
-        elif tag == 'rect':
-            nums = float_list_from_str(attrs)
-            # x y width height
-            if len(nums) >= 4:
-                x, y, w, h = nums[0], nums[1], nums[2], nums[3]
-                sx, sy = scale_point(x, y, vb)
-                sw = w * (W / vb[2])
-                sh = h * (H / vb[3])
-                commands.append(Command(Cmd.RECT, [sx, sy, sw, sh]))
-        elif tag == 'line':
-            nums = float_list_from_str(attrs)
-            if len(nums) >= 4:
-                x1, y1, x2, y2 = nums[0], nums[1], nums[2], nums[3]
-                sx1, sy1 = scale_point(x1, y1, vb)
-                sx2, sy2 = scale_point(x2, y2, vb)
-                commands.append(Command(Cmd.LINE, [sx1, sy1, sx2, sy2]))
-        elif tag == 'polyline':
-            pts = re.search(r'points\s*=\s*"([^"]+)"', attrs)
-            if pts:
-                nums = float_list_from_str(pts.group(1))
-                pairs = [(nums[i], nums[i+1]) for i in range(0, len(nums)-1, 2)]
-                for i, (x, y) in enumerate(pairs):
+    try:
+        proc = subprocess.run(['tools/nanosvg_cli', input_file], capture_output=True, text=True, check=True)
+        out = proc.stdout.splitlines()
+        for line in out:
+            if not line.strip():
+                continue
+            parts = line.split()
+            t = parts[0]
+            if t == 'PATH':
+                # PATH npts x0 y0 x1 y1 ... where points are raw bezier pts (we will convert to cubic segments)
+                vals = [float(x) for x in parts[2:]]
+                # NanoSVG path->pts produces points in groups of 6 (cubic bezier control points?), we will emit as BEZ_CUBIC triplets
+                i = 0
+                while i + 5 < len(vals):
+                    x1 = vals[i]; y1 = vals[i+1]; x2 = vals[i+2]; y2 = vals[i+3]; x = vals[i+4]; y = vals[i+5]
+                    sx1, sy1 = scale_point(x1, y1, vb)
+                    sx2, sy2 = scale_point(x2, y2, vb)
                     sx, sy = scale_point(x, y, vb)
-                    if i == 0:
-                        commands.append(Command(Cmd.MOVE, [sx, sy]))
-                    else:
-                        commands.append(Command(Cmd.LINE_TO, [sx, sy]))
-        elif tag == 'polygon':
-            pts = re.search(r'points\s*=\s*"([^"]+)"', attrs)
-            if pts:
-                nums = float_list_from_str(pts.group(1))
-                pairs = [(nums[i], nums[i+1]) for i in range(0, len(nums)-1, 2)]
-                for i, (x, y) in enumerate(pairs):
+                    commands.append(Command(Cmd.BEZ_CUBIC, [sx1, sy1, sx2, sy2, sx, sy]))
+                    i += 6
+            # other tokens are ignored by the CLI for now
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # fallback to lightweight parsing
+        for m in re.finditer(r'<(path|circle|ellipse|rect|line|polyline|polygon)([^>]*)>', svg, flags=re.IGNORECASE):
+            tag = m.group(1).lower()
+            attrs = m.group(2)
+            if tag == 'path':
+                d = re.search(r'd\s*=\s*"([^"]+)"', attrs)
+                if d:
+                    cmds = parse_path(d.group(1), vb)
+                    commands.extend(cmds)
+            elif tag == 'circle':
+                nums = float_list_from_str(attrs)
+                if len(nums) >= 3:
+                    cx, cy, r = nums[0], nums[1], nums[2]
+                    sx, sy = scale_point(cx, cy, vb)
+                    rr = r * min(W / vb[2], H / vb[3])
+                    commands.append(Command(Cmd.CIRCLE, [sx, sy, rr]))
+            elif tag == 'ellipse':
+                nums = float_list_from_str(attrs)
+                if len(nums) >= 4:
+                    cx, cy, rx, ry = nums[0], nums[1], nums[2], nums[3]
+                    sx, sy = scale_point(cx, cy, vb)
+                    rxs = rx * (W / vb[2])
+                    rys = ry * (H / vb[3])
+                    commands.append(Command(Cmd.ELLIPSE, [sx, sy, rxs, rys]))
+            elif tag == 'rect':
+                nums = float_list_from_str(attrs)
+                # x y width height
+                if len(nums) >= 4:
+                    x, y, w, h = nums[0], nums[1], nums[2], nums[3]
                     sx, sy = scale_point(x, y, vb)
-                    if i == 0:
-                        commands.append(Command(Cmd.MOVE, [sx, sy]))
-                    else:
+                    sw = w * (W / vb[2])
+                    sh = h * (H / vb[3])
+                    commands.append(Command(Cmd.RECT, [sx, sy, sw, sh]))
+            elif tag == 'line':
+                nums = float_list_from_str(attrs)
+                if len(nums) >= 4:
+                    x1, y1, x2, y2 = nums[0], nums[1], nums[2], nums[3]
+                    sx1, sy1 = scale_point(x1, y1, vb)
+                    sx2, sy2 = scale_point(x2, y2, vb)
+                    commands.append(Command(Cmd.LINE, [sx1, sy1, sx2, sy2]))
+            elif tag == 'polyline':
+                pts = re.search(r'points\s*=\s*"([^"]+)"', attrs)
+                if pts:
+                    nums = float_list_from_str(pts.group(1))
+                    pairs = [(nums[i], nums[i+1]) for i in range(0, len(nums)-1, 2)]
+                    for i, (x, y) in enumerate(pairs):
+                        sx, sy = scale_point(x, y, vb)
+                        if i == 0:
+                            commands.append(Command(Cmd.MOVE, [sx, sy]))
+                        else:
+                            commands.append(Command(Cmd.LINE_TO, [sx, sy]))
+            elif tag == 'polygon':
+                pts = re.search(r'points\s*=\s*"([^"]+)"', attrs)
+                if pts:
+                    nums = float_list_from_str(pts.group(1))
+                    pairs = [(nums[i], nums[i+1]) for i in range(0, len(nums)-1, 2)]
+                    for i, (x, y) in enumerate(pairs):
+                        sx, sy = scale_point(x, y, vb)
+                        if i == 0:
+                            commands.append(Command(Cmd.MOVE, [sx, sy]))
+                        else:
+                            commands.append(Command(Cmd.LINE_TO, [sx, sy]))
+                    # close
+                    if pairs:
+                        sx, sy = scale_point(pairs[0][0], pairs[0][1], vb)
                         commands.append(Command(Cmd.LINE_TO, [sx, sy]))
-                # close
-                if pairs:
-                    sx, sy = scale_point(pairs[0][0], pairs[0][1], vb)
-                    commands.append(Command(Cmd.LINE_TO, [sx, sy]))
 
     # append END
     commands.append(Command(Cmd.END, []))

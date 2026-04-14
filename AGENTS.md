@@ -164,5 +164,8 @@ sdkconfig.*        # ESP-IDF config (auto-generated)
 - Build artifacts go to `.pio/` directory (gitignored)
 - The I2S DAC outputs both channels simultaneously for XY control
 - ESP32 WROOM32 has ~320KB SRAM - NanoSVG parser alone uses ~20-30KB
+- Host-side compilation is preferred: use `tools/svg2c.py` to convert SVG → C
+- `lib/nanosvg/` is used by the host tool (not linked into firmware)
  - Host-side compilation is preferred: use `tools/svg2c.py` to convert SVG → C
- - `lib/nanosvg/` is used by the host tool (not linked into firmware)
+ - Build `tools/nanosvg_cli` (./tools/build_nanosvg_cli.sh) to give svg2c a robust parser backed by NanoSVG
+ - `lib/nanosvg/` is included to support the host helper; it is not linked into the ESP32 firmware

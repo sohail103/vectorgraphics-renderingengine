@@ -3,7 +3,16 @@
 #include "driver/i2s.h"
 #include <math.h>
 
+// To render a generated SVG, set ANIMATION_MODE to a special mode that
+// calls render_svg() from generated code. Leave as MODE_CAT by default.
 #define ANIMATION_MODE   MODE_CAT  // change here
+
+#ifdef __has_include
+#if __has_include("generated_svg.c")
+extern void render_svg(void);
+#define MODE_SVG_GENERATED 99
+#endif
+#endif
 
 void app_main(void) {
     i2s_dac_init();
@@ -20,6 +29,7 @@ void app_main(void) {
             case MODE_DONUT:      generate_donut_frame(t); break;
             case MODE_LISSAJOUS:  generate_lissajous_frame(t); break;
             case MODE_CAT:        generate_cat_frame(t); break;
+            case MODE_SVG_GENERATED: render_svg(); break;
         }
         i2s_write(I2S_NUM_0, wave, wave_len * 4, &bytes_written, portMAX_DELAY);
         t += 0.1f;
